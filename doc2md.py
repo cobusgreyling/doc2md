@@ -390,7 +390,7 @@ def validate_markdown(md: str) -> list[str]:
             warnings.append(f"Possible unclosed bold (**) at line {i}")
 
     # Check for very short output (possibly incomplete conversion)
-    non_blank = [l for l in lines if l.strip() and not l.strip().startswith("<!--")]
+    non_blank = [line for line in lines if line.strip() and not line.strip().startswith("<!--")]
     if len(non_blank) < 2 and md.strip() != "<!-- blank page -->":
         warnings.append("Very short output — conversion may be incomplete")
 
@@ -657,7 +657,7 @@ def process_office(
         console.print(f"  [cyan bold]\\[{label}][/] {filename} — converting to PDF via LibreOffice")
     else:
         print(f"\n{CYAN}{BOLD}[{label}]{RESET} {filename}")
-        print(f"  Converting to PDF via LibreOffice...")
+        print("  Converting to PDF via LibreOffice...")
 
     pdf_path = office_to_pdf(office_path)
     try:
