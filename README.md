@@ -1,5 +1,7 @@
 # doc2md
 
+![doc2md — Convert PDFs & Images to Clean, LLM-Ready Markdown Using NVIDIA Nemotron 3 Nano Omni](header.jpg)
+
 Convert PDFs and images to clean, LLM-ready Markdown using NVIDIA Nemotron 3 Nano Omni.
 
 ```
@@ -15,10 +17,20 @@ LLMs need clean text. PDFs and scanned documents are not clean text. This tool b
 
 The output is designed to drop straight into RAG pipelines, LLM context windows, or knowledge bases.
 
+## Requirements
+
+- Python 3.10+
+
 ## Setup
 
 ```bash
 pip install -r requirements.txt
+```
+
+Or install as a package (makes `doc2md` available as a CLI command):
+
+```bash
+pip install .
 ```
 
 Set your NVIDIA API key:
@@ -73,6 +85,24 @@ python doc2md.py small-text.pdf --dpi 300
 python doc2md.py quick-scan.pdf --no-thinking
 ```
 
+### Recursive directory scanning
+
+```bash
+python doc2md.py ./documents/ --recursive
+```
+
+### Skip already-converted files
+
+```bash
+python doc2md.py ./documents/ --skip-existing
+```
+
+### Parallel processing
+
+```bash
+python doc2md.py *.pdf --workers 4
+```
+
 ## Options
 
 | Flag | Description |
@@ -83,6 +113,10 @@ python doc2md.py quick-scan.pdf --no-thinking
 | `--dpi` | PDF rendering DPI (default: 200) |
 | `--api-key` | NVIDIA API key (or use `NVIDIA_API_KEY` env var) |
 | `--no-thinking` | Disable reasoning mode for faster conversion |
+| `--recursive`, `-r` | Scan directories recursively |
+| `--skip-existing` | Skip files with existing `.md` output |
+| `--workers`, `-w` | Number of files to process in parallel (default: 1) |
+| `--version`, `-V` | Show version and exit |
 
 ## Supported Formats
 

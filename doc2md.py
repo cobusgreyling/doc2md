@@ -15,12 +15,15 @@ Usage:
 
 import argparse
 import base64
-import io
+import concurrent.futures
 import os
 import sys
 import time
+from collections.abc import Iterator
 
 from openai import OpenAI
+
+__version__ = "0.1.0"
 
 # ---------------------------------------------------------------------------
 # Terminal colours
@@ -107,8 +110,8 @@ def load_image_file(path: str) -> str:
 # PDF handling
 # ---------------------------------------------------------------------------
 
-def pdf_to_images(pdf_path: str, dpi: int = 200) -> list[bytes]:
-    """Convert each page of a PDF to a PNG image using PyMuPDF."""
+def pdf_page_count(pdf_path: str) -> int:
+    """Return the number of pages in a PDF without rendering them."""
     try:
         import fitz  # PyMuPDF
     except ImportError:
@@ -117,21 +120,38 @@ def pdf_to_images(pdf_path: str, dpi: int = 200) -> list[bytes]:
         sys.exit(1)
 
     doc = fitz.open(pdf_path)
-    images = []
+    count = len(doc)
+    doc.close()
+    return count
+
+
+def pdf_to_images(pdf_path: str, dpi: int = 200) -> Iterator[bytes]:
+    """Yield each page of a PDF as PNG bytes using PyMuPDF (lazy)."""
+    try:
+        import fitz  # PyMuPDF
+    except ImportError:
+        print(f"{BOLD}Error:{RESET} pymupdf is required for PDF support.")
+        print("  Install it: pip install pymupdf")
+        sys.exit(1)
+
+    doc = fitz.open(pdf_path)
     zoom = dpi / 72
     mat = fitz.Matrix(zoom, zoom)
 
     for page in doc:
         pix = page.get_pixmap(matrix=mat)
-        images.append(pix.tobytes("png"))
+        yield pix.tobytes("png")
 
     doc.close()
-    return images
 
 
 # ---------------------------------------------------------------------------
 # Conversion via Nemotron
 # ---------------------------------------------------------------------------
+
+MAX_RETRIES = 3
+RETRY_BACKOFF = 2  # seconds, doubled each attempt
+
 
 def convert_image_to_markdown(
     client: OpenAI,
@@ -145,66 +165,103 @@ def convert_image_to_markdown(
     if page_label:
         prompt = f"This is {page_label}. " + prompt
 
-    response = client.chat.completions.create(
-        model=MODEL,
-        messages=[
-            {"role": "system", "content": SYSTEM_PROMPT},
-            {
-                "role": "user",
-                "content": [
-                    {"type": "image_url", "image_url": {"url": image_data_url}},
-                    {"type": "text", "text": prompt},
-                ],
-            },
-        ],
-        max_tokens=16384,
-        temperature=0.6,
-        top_p=0.95,
-        stream=True,
-        extra_body={"chat_template_kwargs": {"enable_thinking": enable_thinking}},
-    )
+    messages = [
+        {"role": "system", "content": SYSTEM_PROMPT},
+        {
+            "role": "user",
+            "content": [
+                {"type": "image_url", "image_url": {"url": image_data_url}},
+                {"type": "text", "text": prompt},
+            ],
+        },
+    ]
 
-    content = ""
-    for chunk in response:
-        choice = chunk.choices[0] if chunk.choices else None
-        if choice is None:
-            continue
-        delta = choice.delta
-        if delta.content:
-            content += delta.content
-            print(delta.content, end="", flush=True)
+    last_error: Exception | None = None
+    for attempt in range(1, MAX_RETRIES + 1):
+        try:
+            response = client.chat.completions.create(
+                model=MODEL,
+                messages=messages,
+                max_tokens=16384,
+                temperature=0.6,
+                top_p=0.95,
+                stream=True,
+                extra_body={"chat_template_kwargs": {"enable_thinking": enable_thinking}},
+            )
 
-    print()
-    return content.strip()
+            content = ""
+            for chunk in response:
+                choice = chunk.choices[0] if chunk.choices else None
+                if choice is None:
+                    continue
+                delta = choice.delta
+                if delta.content:
+                    content += delta.content
+                    print(delta.content, end="", flush=True)
+
+            print()
+            return content.strip()
+
+        except Exception as exc:
+            last_error = exc
+            status = getattr(getattr(exc, "response", None), "status_code", None)
+            if status and status < 500 and status != 429:
+                raise  # non-retryable client error
+            wait = RETRY_BACKOFF * (2 ** (attempt - 1))
+            label = page_label or "image"
+            print(
+                f"\n  {BOLD}Retry {attempt}/{MAX_RETRIES}{RESET} for {label} "
+                f"({exc}) — waiting {wait}s"
+            )
+            time.sleep(wait)
+
+    raise RuntimeError(
+        f"Failed after {MAX_RETRIES} retries: {last_error}"
+    ) from last_error
 
 
-def process_pdf(client: OpenAI, pdf_path: str, *, dpi: int = 200) -> list[str]:
+def process_pdf(
+    client: OpenAI,
+    pdf_path: str,
+    *,
+    dpi: int = 200,
+    enable_thinking: bool = True,
+) -> list[str]:
     """Convert a PDF to a list of Markdown strings, one per page."""
     filename = os.path.basename(pdf_path)
     print(f"\n{CYAN}{BOLD}[PDF]{RESET} {filename}")
 
-    images = pdf_to_images(pdf_path, dpi=dpi)
-    print(f"  {len(images)} page(s) extracted at {dpi} DPI\n")
+    total = pdf_page_count(pdf_path)
+    print(f"  {total} page(s) at {dpi} DPI\n")
 
     pages = []
-    for i, img_bytes in enumerate(images, 1):
-        page_label = f"page {i} of {len(images)}"
-        print(f"  {BOLD}--- Page {i}/{len(images)} ---{RESET}")
+    for i, img_bytes in enumerate(pdf_to_images(pdf_path, dpi=dpi), 1):
+        page_label = f"page {i} of {total}"
+        print(f"  {BOLD}--- Page {i}/{total} ---{RESET}")
         data_url = encode_image_bytes(img_bytes, "image/png")
-        md = convert_image_to_markdown(client, data_url, page_label=page_label)
+        md = convert_image_to_markdown(
+            client, data_url, page_label=page_label, enable_thinking=enable_thinking,
+        )
         pages.append(md)
         print()
 
     return pages
 
 
-def process_image(client: OpenAI, image_path: str) -> str:
+def process_image(
+    client: OpenAI,
+    image_path: str,
+    *,
+    enable_thinking: bool = True,
+) -> str:
     """Convert a single image file to Markdown."""
     filename = os.path.basename(image_path)
     print(f"\n{CYAN}{BOLD}[Image]{RESET} {filename}")
 
     data_url = load_image_file(image_path)
-    md = convert_image_to_markdown(client, data_url, page_label=filename)
+    md = convert_image_to_markdown(
+        client, data_url, page_label=filename, enable_thinking=enable_thinking,
+    )
     return md
 
 
@@ -279,16 +336,44 @@ Examples:
         action="store_true",
         help="Disable reasoning mode (faster but less accurate)",
     )
+    parser.add_argument(
+        "--recursive", "-r",
+        action="store_true",
+        help="Scan directories recursively for supported files",
+    )
+    parser.add_argument(
+        "--skip-existing",
+        action="store_true",
+        help="Skip files that already have a corresponding .md output",
+    )
+    parser.add_argument(
+        "--workers", "-w",
+        type=int,
+        default=1,
+        help="Number of files to process in parallel (default: 1)",
+    )
+    parser.add_argument(
+        "--version", "-V",
+        action="version",
+        version=f"doc2md {__version__}",
+    )
     args = parser.parse_args()
 
     # Collect all input files
     input_files = []
     for path in args.inputs:
         if os.path.isdir(path):
-            for entry in sorted(os.listdir(path)):
-                ext = os.path.splitext(entry)[1].lower()
-                if ext in SUPPORTED_EXTENSIONS:
-                    input_files.append(os.path.join(path, entry))
+            if args.recursive:
+                for root, _dirs, files in os.walk(path):
+                    for entry in sorted(files):
+                        ext = os.path.splitext(entry)[1].lower()
+                        if ext in SUPPORTED_EXTENSIONS:
+                            input_files.append(os.path.join(root, entry))
+            else:
+                for entry in sorted(os.listdir(path)):
+                    ext = os.path.splitext(entry)[1].lower()
+                    if ext in SUPPORTED_EXTENSIONS:
+                        input_files.append(os.path.join(path, entry))
         elif os.path.isfile(path):
             ext = os.path.splitext(path)[1].lower()
             if ext not in SUPPORTED_EXTENSIONS:
@@ -317,19 +402,44 @@ Examples:
   Reasoning:        {'off' if args.no_thinking else 'on'}
 """)
 
+    # Filter out files that already have output
+    files_to_process = []
+    for fpath in input_files:
+        if args.skip_existing:
+            out_name = os.path.splitext(os.path.basename(fpath))[0] + ".md"
+            out_check = os.path.join(args.output_dir, out_name)
+            if os.path.exists(out_check):
+                print(f"  {DIM}Skipping (exists): {out_check}{RESET}")
+                continue
+        files_to_process.append(fpath)
+
     # Process each file
     all_results: list[tuple[str, list[str]]] = []  # (filename, [page_markdowns])
     t0 = time.time()
 
-    for fpath in input_files:
-        ext = os.path.splitext(fpath)[1].lower()
+    enable_thinking = not args.no_thinking
 
+    def _process_one(fpath: str) -> tuple[str, list[str]]:
+        ext = os.path.splitext(fpath)[1].lower()
         if ext in PDF_EXTENSIONS:
-            pages = process_pdf(client, fpath, dpi=args.dpi)
-            all_results.append((fpath, pages))
-        elif ext in IMAGE_EXTENSIONS:
-            md = process_image(client, fpath)
-            all_results.append((fpath, [md]))
+            pages = process_pdf(
+                client, fpath, dpi=args.dpi, enable_thinking=enable_thinking,
+            )
+            return (fpath, pages)
+        else:
+            md = process_image(client, fpath, enable_thinking=enable_thinking)
+            return (fpath, [md])
+
+    if args.workers > 1:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=args.workers) as pool:
+            futures = {
+                pool.submit(_process_one, fp): fp for fp in files_to_process
+            }
+            for future in concurrent.futures.as_completed(futures):
+                all_results.append(future.result())
+    else:
+        for fpath in files_to_process:
+            all_results.append(_process_one(fpath))
 
     elapsed = time.time() - t0
 
