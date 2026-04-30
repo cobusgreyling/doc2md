@@ -5,14 +5,14 @@ build-backend = "hatchling.build"
 [project]
 name = "doc2md"
 dynamic = ["version"]
-description = "Convert PDFs and images to LLM-ready Markdown using NVIDIA Nemotron 3 Nano Omni"
+description = "Convert PDFs, images, DOCX, and PPTX to LLM-ready Markdown using NVIDIA Nemotron 3 Nano Omni"
 readme = "README.md"
 license = "MIT"
 requires-python = ">=3.10"
 authors = [
     { name = "Cobus Greyling" },
 ]
-keywords = ["markdown", "pdf", "ocr", "llm", "nvidia", "nemotron"]
+keywords = ["markdown", "pdf", "ocr", "llm", "nvidia", "nemotron", "docx", "pptx"]
 classifiers = [
     "Development Status :: 4 - Beta",
     "Intended Audience :: Developers",
@@ -27,6 +27,7 @@ classifiers = [
 dependencies = [
     "openai>=1.30.0",
     "pymupdf>=1.24.0",
+    "rich>=13.0.0",
 ]
 
 [project.scripts]

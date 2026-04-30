@@ -130,3 +130,187 @@ class TestVersion:
     def test_version_defined(self):
         assert hasattr(doc2md, "__version__")
         assert doc2md.__version__
+
+    def test_version_bumped(self):
+        assert doc2md.__version__ == "0.2.0"
+
+
+# ---------------------------------------------------------------------------
+# Feature 5: Page range parsing
+# ---------------------------------------------------------------------------
+
+class TestParsePageRanges:
+    def test_single_page(self):
+        result = doc2md.parse_page_ranges("5", 20)
+        assert result == [4]  # 0-based
+
+    def test_range(self):
+        result = doc2md.parse_page_ranges("1-5", 20)
+        assert result == [0, 1, 2, 3, 4]
+
+    def test_open_start(self):
+        result = doc2md.parse_page_ranges("-3", 10)
+        assert result == [0, 1, 2]
+
+    def test_open_end(self):
+        result = doc2md.parse_page_ranges("8-", 10)
+        assert result == [7, 8, 9]
+
+    def test_combined(self):
+        result = doc2md.parse_page_ranges("1-3,7,10-12", 15)
+        assert result == [0, 1, 2, 6, 9, 10, 11]
+
+    def test_clamps_to_total(self):
+        result = doc2md.parse_page_ranges("1-100", 5)
+        assert result == [0, 1, 2, 3, 4]
+
+    def test_out_of_range_single(self):
+        result = doc2md.parse_page_ranges("99", 5)
+        assert result == []
+
+    def test_deduplicates(self):
+        result = doc2md.parse_page_ranges("1-3,2-4", 10)
+        assert result == [0, 1, 2, 3]
+
+    def test_empty_parts_ignored(self):
+        result = doc2md.parse_page_ranges("1,,3", 10)
+        assert result == [0, 2]
+
+    def test_reversed_range_ignored(self):
+        result = doc2md.parse_page_ranges("5-2", 10)
+        assert result == []
+
+
+# ---------------------------------------------------------------------------
+# Feature 2: Markdown validation
+# ---------------------------------------------------------------------------
+
+class TestValidateMarkdown:
+    def test_valid_markdown(self):
+        md = "# Title\n\nSome text.\n\n## Section\n\n- item 1\n- item 2\n"
+        warnings = doc2md.validate_markdown(md)
+        assert warnings == []
+
+    def test_unbalanced_code_fences(self):
+        md = "# Title\n\n```python\nprint('hello')\n"
+        warnings = doc2md.validate_markdown(md)
+        assert any("code fence" in w.lower() for w in warnings)
+
+    def test_balanced_code_fences(self):
+        md = "```python\nprint('hello')\n```\n"
+        warnings = doc2md.validate_markdown(md)
+        fence_warnings = [w for w in warnings if "code fence" in w.lower()]
+        assert fence_warnings == []
+
+    def test_inconsistent_table_columns(self):
+        md = "| A | B |\n|---|---|\n| 1 | 2 | 3 |\n"
+        warnings = doc2md.validate_markdown(md)
+        assert any("column" in w.lower() for w in warnings)
+
+    def test_consistent_table(self):
+        md = "| A | B |\n|---|---|\n| 1 | 2 |\n"
+        warnings = doc2md.validate_markdown(md)
+        table_warnings = [w for w in warnings if "column" in w.lower()]
+        assert table_warnings == []
+
+    def test_heading_hierarchy_skip(self):
+        md = "# Title\n\n### Skipped h2\n"
+        warnings = doc2md.validate_markdown(md)
+        assert any("heading hierarchy" in w.lower() for w in warnings)
+
+    def test_heading_hierarchy_ok(self):
+        md = "# Title\n\n## Section\n\n### Sub\n"
+        warnings = doc2md.validate_markdown(md)
+        heading_warnings = [w for w in warnings if "heading" in w.lower()]
+        assert heading_warnings == []
+
+    def test_very_short_output(self):
+        md = "hello"
+        warnings = doc2md.validate_markdown(md)
+        assert any("short" in w.lower() for w in warnings)
+
+    def test_blank_page_not_flagged(self):
+        md = "<!-- blank page -->"
+        warnings = doc2md.validate_markdown(md)
+        short_warnings = [w for w in warnings if "short" in w.lower()]
+        assert short_warnings == []
+
+
+# ---------------------------------------------------------------------------
+# Feature 3: Confidence scoring
+# ---------------------------------------------------------------------------
+
+class TestExtractConfidence:
+    def test_extracts_score(self):
+        md = "# Title\n\nSome content.\n\n<!-- confidence: 0.92 -->"
+        cleaned, score = doc2md.extract_confidence(md)
+        assert score == pytest.approx(0.92)
+        assert "confidence" not in cleaned
+        assert "# Title" in cleaned
+
+    def test_no_confidence(self):
+        md = "# Title\n\nSome content."
+        cleaned, score = doc2md.extract_confidence(md)
+        assert score is None
+        assert cleaned == md
+
+    def test_clamps_above_one(self):
+        md = "text\n<!-- confidence: 1.50 -->"
+        _, score = doc2md.extract_confidence(md)
+        assert score == 1.0
+
+    def test_negative_not_matched(self):
+        # Negative values don't match the pattern (model won't produce them)
+        md = "text\n<!-- confidence: -0.5 -->"
+        _, score = doc2md.extract_confidence(md)
+        assert score is None
+
+    def test_whitespace_variations(self):
+        md = "text\n<!--confidence:0.85-->"
+        _, score = doc2md.extract_confidence(md)
+        assert score == pytest.approx(0.85)
+
+
+class TestConfidenceLabel:
+    def test_high(self):
+        assert doc2md.confidence_label(0.95) == "high"
+
+    def test_medium(self):
+        assert doc2md.confidence_label(0.75) == "medium"
+
+    def test_low(self):
+        assert doc2md.confidence_label(0.55) == "low"
+
+    def test_very_low(self):
+        assert doc2md.confidence_label(0.30) == "very low"
+
+
+# ---------------------------------------------------------------------------
+# Feature 1: Office format support
+# ---------------------------------------------------------------------------
+
+class TestSupportedExtensions:
+    def test_docx_supported(self):
+        assert ".docx" in doc2md.SUPPORTED_EXTENSIONS
+
+    def test_pptx_supported(self):
+        assert ".pptx" in doc2md.SUPPORTED_EXTENSIONS
+
+    def test_office_extensions(self):
+        assert ".docx" in doc2md.OFFICE_EXTENSIONS
+        assert ".pptx" in doc2md.OFFICE_EXTENSIONS
+
+
+class TestFindLibreOffice:
+    @patch("shutil.which", return_value="/usr/bin/libreoffice")
+    def test_finds_libreoffice(self, mock_which):
+        result = doc2md._find_libreoffice()
+        assert result == "/usr/bin/libreoffice"
+
+    @patch("shutil.which", return_value=None)
+    @patch("os.path.isfile", return_value=False)
+    @patch("doc2md.sys")
+    def test_returns_none_when_missing(self, mock_sys, mock_isfile, mock_which):
+        mock_sys.platform = "linux"
+        result = doc2md._find_libreoffice()
+        assert result is None
