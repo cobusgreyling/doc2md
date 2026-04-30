@@ -7,7 +7,7 @@ Convert PDFs and images to clean, LLM-ready Markdown using NVIDIA Nemotron 3 Nan
 ```
   ┌──────────────┐      ┌───────────────────────┐      ┌──────────────┐
   │  PDF / Image │ ───► │  Nemotron 3 Nano Omni │ ───► │  Markdown    │
-  │              │      │  (Vision + Reasoning)  │      │  (.md files) │
+  │              │      │  (Vision + Reasoning) │      │  (.md files) │
   └──────────────┘      └───────────────────────┘      └──────────────┘
 ```
 
